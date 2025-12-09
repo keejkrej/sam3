@@ -26,7 +26,7 @@ from segment_with_template_embedded import (
 
 
 def process_single_image(image_path, template_image, model, processor, device, output_dir, 
-                        size_ratio_min=0.8, size_ratio_max=1.2, use_refinement=True, num_refinement_prompts=2):
+                        size_ratio_min=0.7, size_ratio_max=1.3, use_refinement=True, num_refinement_prompts=2):
     """
     Process a single image using the complete pipeline from segment_with_template_embedded.py
     """
@@ -127,8 +127,8 @@ def main():
     
     # Process each image
     results = []
-    size_ratio_min = 0.8
-    size_ratio_max = 1.2
+    size_ratio_min = 0.7
+    size_ratio_max = 1.3
     
     print(f"\nProcessing parameters:")
     print(f"  Size ratio range: {size_ratio_min:.1f}x - {size_ratio_max:.1f}x (width & height)")

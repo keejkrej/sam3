@@ -250,7 +250,7 @@ def convert_bboxes_to_original(bboxes_xyxy, composite_w, composite_h,
 
 
 def process_with_template_embedding(target_image, template_image, model, processor, device,
-                                    size_ratio_min=0.8, size_ratio_max=1.2, method='replace_patch'):
+                                    size_ratio_min=0.7, size_ratio_max=1.3, method='replace_patch'):
     """
     Process an image with template embedding approach.
     
@@ -260,8 +260,8 @@ def process_with_template_embedding(target_image, template_image, model, process
         model: SAM3 model
         processor: SAM3 processor
         device: Device to use
-        size_ratio_min: Minimum size ratio (default 0.8)
-        size_ratio_max: Maximum size ratio (default 1.2)
+        size_ratio_min: Minimum size ratio (default 0.7)
+        size_ratio_max: Maximum size ratio (default 1.3)
         method: Embedding method ('replace_patch', 'extend_right', 'extend_bottom')
     
     Returns:
@@ -406,7 +406,7 @@ def is_box_in_embedded_region(box_xyxy, template_w, template_h, overlap_threshol
 
 
 def refine_with_detections(target_image, boxes_prompt, scores_prompt, model, processor, device,
-                          template_w, template_h, size_ratio_min=0.8, size_ratio_max=1.2,
+                          template_w, template_h, size_ratio_min=0.7, size_ratio_max=1.3,
                           num_prompts=2):
     """
     Refine detections by using first pass results as prompts on original image.
@@ -499,7 +499,7 @@ def refine_with_detections(target_image, boxes_prompt, scores_prompt, model, pro
 
 
 def process_image_with_template(target_image, template_image, model, processor, device,
-                                size_ratio_min=0.8, size_ratio_max=1.2, 
+                                size_ratio_min=0.7, size_ratio_max=1.3, 
                                 use_refinement=True, num_refinement_prompts=2,
                                 output_path=None, image_path=None):
     """
@@ -511,8 +511,8 @@ def process_image_with_template(target_image, template_image, model, processor, 
         model: SAM3 model
         processor: SAM3 processor
         device: Device to use
-        size_ratio_min: Minimum size ratio (default 0.8)
-        size_ratio_max: Maximum size ratio (default 1.2)
+        size_ratio_min: Minimum size ratio (default 0.7)
+        size_ratio_max: Maximum size ratio (default 1.3)
         use_refinement: Whether to use second pass refinement (default True)
         num_refinement_prompts: Number of top detections to use as prompts (default 2)
         output_path: Optional path to save visualization
@@ -654,8 +654,8 @@ def main():
     print("Model loaded successfully!")
     
     # Process with full pipeline (including second pass)
-    size_ratio_min = 0.8
-    size_ratio_max = 1.2
+    size_ratio_min = 0.7
+    size_ratio_max = 1.3
     use_refinement = True
     num_refinement_prompts = 2
     
