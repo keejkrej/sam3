@@ -317,9 +317,13 @@ def process_with_template_embedding(target_image, template_image, model, process
 def filter_by_size(masks, boxes, scores, template_w, template_h, 
                    size_ratio_min, size_ratio_max, method='replace_patch',
                    composite_w=None, composite_h=None, original_w=None, original_h=None,
-                   offset_x=0, offset_y=0):
+                   offset_x=0, offset_y=0, aspect_ratio_min=0.9, aspect_ratio_max=1.1):
     """
-    Filter detections by size (width and height ratios).
+    Filter detections by size (width and height ratios) and aspect ratio.
+    
+    Args:
+        aspect_ratio_min: Minimum aspect ratio ratio (default 0.9)
+        aspect_ratio_max: Maximum aspect ratio ratio (default 1.1)
     
     Returns:
         masks_filtered, boxes_filtered, scores_filtered
@@ -363,10 +367,26 @@ def filter_by_size(masks, boxes, scores, template_w, template_h,
     if len(size_filtered_indices) == 0:
         return [], np.array([]), np.array([])
     
+    # Filter by aspect ratio
+    template_aspect_ratio = template_w / template_h
+    detection_aspect_ratios = detection_widths[size_filtered_indices] / detection_heights[size_filtered_indices]
+    aspect_ratio_ratios = detection_aspect_ratios / template_aspect_ratio
+    
+    aspect_mask = (aspect_ratio_ratios >= aspect_ratio_min) & (aspect_ratio_ratios <= aspect_ratio_max)
+    final_filtered_indices = size_filtered_indices[np.where(aspect_mask)[0]]
+    
+    if len(size_filtered_indices) > 0:
+        print(f"After size filtering: {len(size_filtered_indices)}/{len(all_indices)} detections remain")
+        if len(final_filtered_indices) < len(size_filtered_indices):
+            print(f"After aspect ratio filtering ({aspect_ratio_min:.1f}x-{aspect_ratio_max:.1f}x): {len(final_filtered_indices)}/{len(size_filtered_indices)} detections remain")
+    
+    if len(final_filtered_indices) == 0:
+        return [], np.array([]), np.array([])
+    
     # Apply filter
-    masks_filtered = masks_candidates[size_filtered_indices] if torch.is_tensor(masks_candidates) else [masks_candidates[i] for i in size_filtered_indices]
-    boxes_filtered = boxes_candidates[size_filtered_indices]
-    scores_filtered = scores_candidates[size_filtered_indices] if torch.is_tensor(scores_candidates) else scores_candidates[size_filtered_indices]
+    masks_filtered = masks_candidates[final_filtered_indices] if torch.is_tensor(masks_candidates) else [masks_candidates[i] for i in final_filtered_indices]
+    boxes_filtered = boxes_candidates[final_filtered_indices]
+    scores_filtered = scores_candidates[final_filtered_indices] if torch.is_tensor(scores_candidates) else scores_candidates[final_filtered_indices]
     
     return masks_filtered, boxes_filtered, scores_filtered
 
