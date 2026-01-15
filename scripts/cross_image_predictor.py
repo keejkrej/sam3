@@ -14,7 +14,6 @@ import torch
 from importlib.resources import files
 from PIL import Image
 
-import sam3
 from sam3 import build_sam3_image_model
 from sam3.model.box_ops import box_xywh_to_cxcywh
 from sam3.model.sam3_image_processor import Sam3Processor
@@ -107,12 +106,12 @@ def main():
             # Resize mask to match image dimensions if needed
             if mask_h != h1 or mask_w != w1:
                 mask_pil = Image.fromarray((mask.numpy() * 255).astype(np.uint8))
-                mask_pil = mask_pil.resize((w1, h1), Image.NEAREST)
+                mask_pil = mask_pil.resize((w1, h1), Image.Resampling.NEAREST)
                 mask = torch.from_numpy(np.array(mask_pil) / 255.0).float()
 
             # Resize to processor resolution
             mask_pil = Image.fromarray((mask.numpy() * 255).astype(np.uint8))
-            mask_resized = mask_pil.resize((processor.resolution, processor.resolution), Image.NEAREST)
+            mask_resized = mask_pil.resize((processor.resolution, processor.resolution), Image.Resampling.NEAREST)
             mask_tensor = torch.from_numpy(np.array(mask_resized) / 255.0).float()
 
             state1 = processor._add_mask_prompt(mask=mask_tensor, label=True, state=state1)
@@ -150,6 +149,10 @@ def main():
         # 2. Capture embeddings
         saved_prompt = state1["prompt"]
         saved_prompt_mask = state1["prompt_mask"]
+
+        # Disable position-related components for second pass (use only visual features)
+        model.input_geometry_encoder.boxes_direct_project = None
+        model.input_geometry_encoder.boxes_pos_enc_project = None
 
         print(f"Applying extracted {prompt_type} prompt to {args.img2}...")
 

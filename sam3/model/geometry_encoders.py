@@ -629,11 +629,11 @@ class SequenceGeometryEncoder(nn.Module):
         type_embed = self.label_embed(points_labels.long())
         return type_embed + points_embed, points_mask
 
-    def _encode_boxes(self, boxes, boxes_mask, boxes_labels, img_feats, pool_only=False):
+    def _encode_boxes(self, boxes, boxes_mask, boxes_labels, img_feats):
         boxes_embed = None
         n_boxes, bs = boxes.shape[:2]
 
-        if self.boxes_direct_project is not None and not pool_only:
+        if self.boxes_direct_project is not None:
             proj = self.boxes_direct_project(boxes)
             assert boxes_embed is None
             boxes_embed = proj
@@ -664,7 +664,7 @@ class SequenceGeometryEncoder(nn.Module):
             else:
                 boxes_embed = boxes_embed + proj
 
-        if self.boxes_pos_enc_project is not None and not pool_only:
+        if self.boxes_pos_enc_project is not None:
             cx, cy, w, h = boxes.unbind(-1)
             enc = self.pos_enc.encode_boxes(
                 cx.flatten(), cy.flatten(), w.flatten(), h.flatten()
@@ -676,12 +676,6 @@ class SequenceGeometryEncoder(nn.Module):
                 boxes_embed = proj
             else:
                 boxes_embed = boxes_embed + proj
-
-        # If boxes_embed is still None (when pool_only=True), create zeros
-        if boxes_embed is None:
-            boxes_embed = torch.zeros(
-                n_boxes, bs, self.d_model, device=boxes.device, dtype=boxes.dtype
-            )
 
         type_embed = self.label_embed(boxes_labels.long())
         return type_embed + boxes_embed, boxes_mask
@@ -720,7 +714,7 @@ class SequenceGeometryEncoder(nn.Module):
             masks = masks + self.mask_label_embed(mask_labels.long())
         return masks, attn_mask
 
-    def forward(self, geo_prompt: Prompt, img_feats, img_sizes, img_pos_embeds=None, pool_only=False):
+    def forward(self, geo_prompt: Prompt, img_feats, img_sizes, img_pos_embeds=None):
         points = geo_prompt.point_embeddings
         points_mask = geo_prompt.point_mask
         points_labels = geo_prompt.point_labels
@@ -797,7 +791,6 @@ class SequenceGeometryEncoder(nn.Module):
                 boxes_mask=boxes_mask,
                 boxes_labels=boxes_labels,
                 img_feats=img_feats,
-                pool_only=pool_only,
             )
 
             final_embeds, final_mask = concat_padded_sequences(
