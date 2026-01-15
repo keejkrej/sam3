@@ -931,6 +931,29 @@ def show_points(coords, labels, ax, marker_size=375):
     )
 
 
+def plot_mask_contour(mask, ax=None, color=[1, 1, 0], alpha=0.4):
+    """Draw the input mask prompt with semi-transparent overlay and contour outline."""
+    if ax is None:
+        ax = plt.gca()
+    mask_np = mask.cpu().numpy() if isinstance(mask, torch.Tensor) else mask
+    # Create RGBA overlay
+    h, w = mask_np.shape
+    mask_overlay = np.zeros((h, w, 4))
+    mask_overlay[..., :3] = color
+    mask_overlay[..., 3] = mask_np * alpha
+    ax.imshow(mask_overlay)
+
+    # Draw contour outline (like dashed box for box prompts)
+    ax.contour(mask_np, levels=[0.5], colors=["yellow"], linewidths=2, linestyles="dashed")
+
+    # Add "PROMPT" label at mask centroid
+    if mask_np.sum() > 0:
+        y_coords, x_coords = np.where(mask_np > 0.5)
+        cx, cy = x_coords.mean(), y_coords.min() - 10  # Above the mask
+        ax.text(cx, cy, "PROMPT", color="yellow", fontsize=12, fontweight="bold",
+                ha="center", va="bottom", bbox=dict(boxstyle="round,pad=0.2", fc="black", alpha=0.5))
+
+
 def load_frame(frame):
     if isinstance(frame, np.ndarray):
         img = frame

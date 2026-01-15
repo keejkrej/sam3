@@ -17,7 +17,7 @@ from PIL import Image
 from sam3 import build_sam3_image_model
 from sam3.model.box_ops import box_xywh_to_cxcywh
 from sam3.model.sam3_image_processor import Sam3Processor
-from sam3.visualization_utils import normalize_bbox, plot_results, plot_bbox
+from sam3.visualization_utils import normalize_bbox, plot_results, plot_bbox, plot_mask_contour
 
 
 def load_mask(mask_path: str) -> torch.Tensor:
@@ -35,29 +35,6 @@ def load_mask(mask_path: str) -> torch.Tensor:
     # Convert to binary: threshold at 128
     mask_binary = (mask_np > 128).astype(np.float32)
     return torch.from_numpy(mask_binary)
-
-
-def plot_mask_prompt(mask, ax=None, color=[1, 1, 0], alpha=0.4):
-    """Draw the input mask prompt with semi-transparent overlay and contour outline."""
-    if ax is None:
-        ax = plt.gca()
-    mask_np = mask.cpu().numpy() if isinstance(mask, torch.Tensor) else mask
-    # Create RGBA overlay
-    h, w = mask_np.shape
-    mask_overlay = np.zeros((h, w, 4))
-    mask_overlay[..., :3] = color
-    mask_overlay[..., 3] = mask_np * alpha
-    ax.imshow(mask_overlay)
-
-    # Draw contour outline (like dashed box for box prompts)
-    ax.contour(mask_np, levels=[0.5], colors=["yellow"], linewidths=2, linestyles="dashed")
-
-    # Add "PROMPT" label at mask centroid
-    if mask_np.sum() > 0:
-        y_coords, x_coords = np.where(mask_np > 0.5)
-        cx, cy = x_coords.mean(), y_coords.min() - 10  # Above the mask
-        ax.text(cx, cy, "PROMPT", color="yellow", fontsize=12, fontweight="bold",
-                ha="center", va="bottom", bbox=dict(boxstyle="round,pad=0.2", fc="black", alpha=0.5))
 
 
 def main():
@@ -135,7 +112,7 @@ def main():
 
         # Draw the prompt visualization
         if args.mask:
-            plot_mask_prompt(mask)
+            plot_mask_contour(mask)
             plt.title(f"Mask Prompt on Source Image: {os.path.basename(args.img1)}")
         else:
             plot_bbox(h1, w1, args.box, box_format="XYWH", color="yellow", linestyle="dashed", text="PROMPT", relative_coords=False)
