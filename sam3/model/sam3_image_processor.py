@@ -110,7 +110,7 @@ class Sam3Processor:
         return state
 
     @torch.inference_mode()
-    def _add_text_prompt(self, prompt: str, state: Dict, pool_only: bool = False):
+    def _add_text_prompt(self, prompt: str, state: Dict):
         """Adds a text prompt and encodes it without running inference."""
         if "backbone_out" not in state:
             raise ValueError("You must call set_image before _add_text_prompt")
@@ -126,7 +126,6 @@ class Sam3Processor:
                 backbone_out=state["backbone_out"],
                 find_input=self.find_stage,
                 geometric_prompt=geometric_prompt,
-                pool_only=pool_only,
             )
         
         state["prompt"] = encoded["prompt"]
@@ -219,13 +218,12 @@ class Sam3Processor:
         labels = torch.tensor([label], device=self.device, dtype=torch.long).view(1, 1)
         state["geometric_prompt"].append_masks(masks, labels)
 
-        # Encode prompts (pool_only not applicable for masks)
+        # Encode prompts
         with torch.profiler.record_function("SAM3Image._encode_prompt"):
             encoded = self.model._encode_prompt(
                 backbone_out=state["backbone_out"],
                 find_input=self.find_stage,
                 geometric_prompt=state["geometric_prompt"],
-                pool_only=False,
             )
 
         # Store encoded prompts directly in state
@@ -239,6 +237,67 @@ class Sam3Processor:
         state["visual_prompt_mask"] = encoded["visual_prompt_mask"]
         state["backbone_out"] = encoded["backbone_out"]
 
+        # Remove geometric_prompt as we only rely on prompt and prompt_mask for inference
+        if "geometric_prompt" in state:
+            del state["geometric_prompt"]
+
+        return state
+
+    @torch.inference_mode()
+    def _add_point_prompt(self, point: List, label: bool, state: Dict):
+        """Adds a point prompt and encodes it without running inference.
+
+        Args:
+            point: List of [x, y] coordinates for the point.
+            label: Whether this is a positive (True) or negative (False) prompt.
+            state: The processor state dictionary containing backbone_out.
+
+        Returns:
+            Updated state dictionary with encoded prompt.
+        """
+        if "backbone_out" not in state:
+            raise ValueError("You must call set_image before _add_point_prompt")
+
+        if "language_features" not in state["backbone_out"]:
+            # Set dummy text prompt for visual-only mode
+            dummy_text_outputs = self.model.backbone.forward_text(
+                ["visual"], device=self.device
+            )
+            state["backbone_out"].update(dummy_text_outputs)
+
+        # Initialize geometric prompt if needed
+        if "geometric_prompt" not in state:
+            state["geometric_prompt"] = self.model._get_dummy_prompt()
+
+        # Normalize point coordinates to [0, 1] range
+        img_w = state["original_width"]
+        img_h = state["original_height"]
+        normalized_point = [point[0] / img_w, point[1] / img_h]
+        
+        # adding a batch and sequence dimension
+        points = torch.tensor(normalized_point, device=self.device, dtype=torch.float32).view(1, 1, 2)
+        labels = torch.tensor([label], device=self.device, dtype=torch.bool).view(1, 1)
+        state["geometric_prompt"].append_points(points, labels)
+
+        # Encode prompts immediately
+        with torch.profiler.record_function("SAM3Image._encode_prompt"):
+            encoded = self.model._encode_prompt(
+                backbone_out=state["backbone_out"],
+                find_input=self.find_stage,
+                geometric_prompt=state["geometric_prompt"],
+            )
+        
+        # Store encoded prompts directly in state
+        state["prompt"] = encoded["prompt"]
+        state["prompt_mask"] = encoded["prompt_mask"]
+        state["txt_feats"] = encoded["txt_feats"]
+        state["txt_masks"] = encoded["txt_masks"]
+        state["geo_feats"] = encoded["geo_feats"]
+        state["geo_masks"] = encoded["geo_masks"]
+        state["visual_prompt_embed"] = encoded["visual_prompt_embed"]
+        state["visual_prompt_mask"] = encoded["visual_prompt_mask"]
+        state["backbone_out"] = encoded["backbone_out"]
+        
         # Remove geometric_prompt as we only rely on prompt and prompt_mask for inference
         if "geometric_prompt" in state:
             del state["geometric_prompt"]

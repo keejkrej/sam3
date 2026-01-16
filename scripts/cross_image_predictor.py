@@ -42,10 +42,11 @@ def main():
     parser.add_argument("--img1", type=str, required=True, help="Path to the first image (to extract prompt from)")
     parser.add_argument("--img2", type=str, required=True, help="Path to the second image (to apply prompt to)")
 
-    # Mutually exclusive group for box vs mask
+    # Mutually exclusive group for box vs mask vs point
     prompt_group = parser.add_mutually_exclusive_group(required=True)
     prompt_group.add_argument("--box", type=float, nargs=4, help="Bounding box in [x, y, w, h] format for img1")
     prompt_group.add_argument("--mask", type=str, help="Path to binary mask image (white=object) for img1")
+    prompt_group.add_argument("--point", type=float, nargs=2, help="Point coordinates [x, y] for img1")
 
     parser.add_argument("--threshold", type=float, default=0.5, help="Confidence threshold for segmentation (default: 0.5)")
     parser.add_argument("--output1", type=str, default="image1_segmentation.png", help="Path to save image 1 segmentation")
@@ -92,7 +93,7 @@ def main():
 
             state1 = processor._add_mask_prompt(mask=mask_tensor, label=True, state=state1)
             prompt_type = "mask"
-        else:
+        elif args.box:
             print(f"Extracting prompt from {args.img1} with box {args.box}...")
 
             box_xywh = torch.tensor(args.box).view(-1, 4)
@@ -101,6 +102,11 @@ def main():
 
             state1 = processor._add_box_prompt(box=norm_box, label=True, state=state1)
             prompt_type = "box"
+        elif args.point:
+            print(f"Extracting prompt from {args.img1} with point {args.point}...")
+            
+            state1 = processor._add_point_prompt(point=args.point, label=True, state=state1)
+            prompt_type = "point"
 
         # Run inference on image 1 to see what's detected and save plot
         state1_inference = processor._forward_grounding(state1.copy())
@@ -113,9 +119,13 @@ def main():
         if args.mask:
             plot_mask_contour(mask)
             plt.title(f"Mask Prompt on Source Image: {os.path.basename(args.img1)}")
-        else:
+        elif args.box:
             plot_bbox(h1, w1, args.box, box_format="XYWH", color="yellow", linestyle="dashed", text="PROMPT", relative_coords=False)
             plt.title(f"Box Prompt on Source Image: {os.path.basename(args.img1)}")
+        elif args.point:
+            # Plot the point
+            plt.plot(args.point[0], args.point[1], 'yo', markersize=10, markeredgecolor='black', markeredgewidth=2)
+            plt.title(f"Point Prompt on Source Image: {os.path.basename(args.img1)}")
 
         plt.axis("off")
         plt.savefig(args.output1, bbox_inches='tight', dpi=150)
@@ -126,11 +136,9 @@ def main():
         saved_prompt = state1["prompt"]
         saved_prompt_mask = state1["prompt_mask"]
 
-        # Disable position-related components for second pass (use only visual features)
-        # model.geometry_encoder.boxes_direct_project = None
-        # model.geometry_encoder.boxes_pos_enc_project = None
-
         print(f"Applying extracted {prompt_type} prompt to {args.img2}...")
+
+        processor = Sam3Processor(model, confidence_threshold=args.threshold)
 
         # 3. Apply to image 2
         state2 = processor.set_image(image2)
