@@ -50,7 +50,6 @@ def main():
     parser.add_argument("--threshold", type=float, default=0.5, help="Confidence threshold for segmentation (default: 0.5)")
     parser.add_argument("--output1", type=str, default="image1_segmentation.png", help="Path to save image 1 segmentation")
     parser.add_argument("--output2", type=str, default="image2_segmentation.png", help="Path to save image 2 segmentation")
-    parser.add_argument("--pool-only", action="store_true", help="Use only ROI-pooled features (only applies to box prompts)")
 
     args = parser.parse_args()
 
