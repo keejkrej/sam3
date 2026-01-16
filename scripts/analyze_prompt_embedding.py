@@ -13,12 +13,9 @@ import torch
 from importlib.resources import files
 from PIL import Image
 
-
-import sam3
 from sam3 import build_sam3_image_model
-from sam3.model.box_ops import box_xywh_to_cxcywh
 from sam3.model.sam3_image_processor import Sam3Processor
-from sam3.visualization_utils import normalize_bbox, plot_results, plot_bbox
+from sam3.visualization_utils import plot_results, plot_bbox
 
 
 def create_layout(img: Image.Image, layout: str) -> Image.Image:
@@ -40,14 +37,9 @@ def create_layout(img: Image.Image, layout: str) -> Image.Image:
 def extract_prompt_embedding(processor, img: Image.Image, box_xywh: list) -> dict:
     """Extract prompt embedding for a given image and box."""
     w, h = img.size
-    
     state = processor.set_image(img)
     
-    box_xywh_tensor = torch.tensor(box_xywh).view(-1, 4)
-    box_cxcywh = box_xywh_to_cxcywh(box_xywh_tensor)
-    norm_box = normalize_bbox(box_cxcywh, w, h).flatten().tolist()
-    
-    state = processor._add_box_prompt(box=norm_box, label=True, state=state)
+    state = processor.add_prompt({"type": "box", "box": box_xywh, "label": True}, state)
     
     # Extract geometry features instead of combined prompt features
     geo_feats = state["geo_feats"]  # (num_geo_tokens, batch_size, d_model)
@@ -178,7 +170,7 @@ def main():
             geo_tokens = geo_shape[0]
             visual_tokens = visual_shape[0]
             
-            print(f"  Token breakdown:")
+            print("  Token breakdown:")
             print(f"    Text tokens: {txt_tokens} (positions 0-{txt_tokens-1})")
             print(f"    Geometry tokens: {geo_tokens} (positions {txt_tokens}-{txt_tokens+geo_tokens-1})")
             print(f"    Visual tokens: {visual_tokens} (positions {txt_tokens+geo_tokens}-{txt_tokens+geo_tokens+visual_tokens-1})")
@@ -250,7 +242,7 @@ def main():
             token_distance_matrices.append(distance_matrix)
 
         # Create distance visualization for each geometry token
-        print(f"\n=== Creating geometry token-by-token visualizations ===")
+        print("\n=== Creating geometry token-by-token visualizations ===")
         
         # Create figure with 2 subplots for each geometry token
         fig_tokens = plt.figure(figsize=(15, 6))
@@ -282,7 +274,7 @@ def main():
             # Add text annotations
             for i in range(len(layouts)):
                 for j in range(len(layouts)):
-                    text = ax.text(j, i, f'{matrix_data[i, j]:.4f}',
+                    ax.text(j, i, f'{matrix_data[i, j]:.4f}',
                                   ha="center", va="center", color="white", fontsize=8)
             
             # Add colorbar
@@ -296,7 +288,7 @@ def main():
         print(f"\nToken-by-token visualization saved to {token_output}")
         
         # Print summary of what each geometry token represents
-        print(f"\n=== Geometry Token Analysis Summary ===")
+        print("\n=== Geometry Token Analysis Summary ===")
         print("Geo Token 0: Box coordinate encoding - may vary with image normalization")
         print("Geo Token 1: Spatial position encoding - varies with duplication pattern")
 

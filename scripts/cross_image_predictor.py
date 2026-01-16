@@ -15,9 +15,8 @@ from importlib.resources import files
 from PIL import Image
 
 from sam3 import build_sam3_image_model
-from sam3.model.box_ops import box_xywh_to_cxcywh
 from sam3.model.sam3_image_processor import Sam3Processor
-from sam3.visualization_utils import normalize_bbox, plot_results, plot_bbox, plot_mask_contour
+from sam3.visualization_utils import plot_results, plot_bbox, plot_mask_contour
 
 
 def load_mask(mask_path: str) -> torch.Tensor:
@@ -42,11 +41,12 @@ def main():
     parser.add_argument("--img1", type=str, required=True, help="Path to the first image (to extract prompt from)")
     parser.add_argument("--img2", type=str, required=True, help="Path to the second image (to apply prompt to)")
 
-    # Mutually exclusive group for box vs mask vs point
+    # Mutually exclusive group for box vs mask vs point vs text
     prompt_group = parser.add_mutually_exclusive_group(required=True)
     prompt_group.add_argument("--box", type=float, nargs=4, help="Bounding box in [x, y, w, h] format for img1")
     prompt_group.add_argument("--mask", type=str, help="Path to binary mask image (white=object) for img1")
     prompt_group.add_argument("--point", type=float, nargs=2, help="Point coordinates [x, y] for img1")
+    prompt_group.add_argument("--text", type=str, help="Text prompt for img1")
 
     parser.add_argument("--threshold", type=float, default=0.5, help="Confidence threshold for segmentation (default: 0.5)")
     parser.add_argument("--output1", type=str, default="image1_segmentation.png", help="Path to save image 1 segmentation")
@@ -76,37 +76,25 @@ def main():
         if args.mask:
             print(f"Extracting prompt from {args.img1} with mask {args.mask}...")
 
-            # Load and preprocess mask
+            # Load mask
             mask = load_mask(args.mask)
-            mask_h, mask_w = mask.shape
-
-            # Resize mask to match image dimensions if needed
-            if mask_h != h1 or mask_w != w1:
-                mask_pil = Image.fromarray((mask.numpy() * 255).astype(np.uint8))
-                mask_pil = mask_pil.resize((w1, h1), Image.Resampling.NEAREST)
-                mask = torch.from_numpy(np.array(mask_pil) / 255.0).float()
-
-            # Resize to processor resolution
-            mask_pil = Image.fromarray((mask.numpy() * 255).astype(np.uint8))
-            mask_resized = mask_pil.resize((processor.resolution, processor.resolution), Image.Resampling.NEAREST)
-            mask_tensor = torch.from_numpy(np.array(mask_resized) / 255.0).float()
-
-            state1 = processor._add_mask_prompt(mask=mask_tensor, label=True, state=state1)
+            state1 = processor.add_prompt({"type": "mask", "mask": mask, "label": True}, state1)
             prompt_type = "mask"
         elif args.box:
             print(f"Extracting prompt from {args.img1} with box {args.box}...")
 
-            box_xywh = torch.tensor(args.box).view(-1, 4)
-            box_cxcywh = box_xywh_to_cxcywh(box_xywh)
-            norm_box = normalize_bbox(box_cxcywh, w1, h1).flatten().tolist()
-
-            state1 = processor._add_box_prompt(box=norm_box, label=True, state=state1)
+            state1 = processor.add_prompt({"type": "box", "box": args.box, "label": True}, state1)
             prompt_type = "box"
         elif args.point:
             print(f"Extracting prompt from {args.img1} with point {args.point}...")
             
-            state1 = processor._add_point_prompt(point=args.point, label=True, state=state1)
+            state1 = processor.add_prompt({"type": "point", "point": args.point, "label": True}, state1)
             prompt_type = "point"
+        elif args.text:
+            print(f"Extracting prompt from {args.img1} with text '{args.text}'...")
+            
+            state1 = processor.add_prompt({"type": "text", "text": args.text}, state1)
+            prompt_type = "text"
 
         # Run inference on image 1 to see what's detected and save plot
         state1_inference = processor._forward_grounding(state1.copy())
@@ -126,6 +114,9 @@ def main():
             # Plot the point
             plt.plot(args.point[0], args.point[1], 'yo', markersize=10, markeredgecolor='black', markeredgewidth=2)
             plt.title(f"Point Prompt on Source Image: {os.path.basename(args.img1)}")
+        elif args.text:
+            # Add text as title
+            plt.title(f"Text Prompt on Source Image: {os.path.basename(args.img1)}\nText: '{args.text}'")
 
         plt.axis("off")
         plt.savefig(args.output1, bbox_inches='tight', dpi=150)

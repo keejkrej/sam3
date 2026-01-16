@@ -7,7 +7,7 @@ Copy of the sam3_image_predictor_example.ipynb adapted to test the latest change
 import os
 
 import matplotlib.pyplot as plt
-import numpy as np
+import torch
 from importlib.resources import files
 
 import sam3
@@ -15,11 +15,9 @@ from PIL import Image
 from sam3 import build_sam3_image_model
 from sam3.model.box_ops import box_xywh_to_cxcywh
 from sam3.model.sam3_image_processor import Sam3Processor
-from sam3.visualization_utils import draw_box_on_image, normalize_bbox, plot_results
+from sam3.visualization_utils import normalize_bbox, plot_results
 
-sam3_root = os.path.join(os.path.dirname(sam3.__file__), "..")
-
-import torch
+sam3_root = os.path.join(os.path.dirname(str(sam3.__file__)), "..")
 
 # turn on tfloat32 for Ampere GPUs
 # https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices
@@ -87,8 +85,8 @@ def single_box_reuse_example(processor, image, width, height):
     norm_box_cxcywh = normalize_bbox(box_input_cxcywh, width, height).flatten().tolist()
     
     # Add the prompt and extract the encoded features
-    inference_state = processor._add_box_prompt(
-        box=norm_box_cxcywh, label=True, state=inference_state
+    inference_state = processor.add_prompt(
+        {"type": "box", "box": norm_box_cxcywh, "label": True}, inference_state
     )
     
     # Extract the encoded prompt and mask for reuse
@@ -98,7 +96,7 @@ def single_box_reuse_example(processor, image, width, height):
     
     # Define various image modifications
     modifications = {
-        "flipped": lambda img: img.transpose(Image.FLIP_LEFT_RIGHT),
+        "flipped": lambda img: img.transpose(Image.Transpose.FLIP_LEFT_RIGHT),
         "cropped": lambda img: img.crop((100, 100, 600, 600)),
         "resized": lambda img: img.resize((width // 2, height // 2)),
         "grayscale": lambda img: img.convert("L").convert("RGB"), # Convert to L then back to RGB to maintain 3 channels
@@ -138,8 +136,8 @@ def cross_image_reuse_example(processor, image1, image2, width1, height1):
     norm_box_cxcywh = normalize_bbox(box_input_cxcywh, width1, height1).flatten().tolist()
     
     # Add the prompt and extract the encoded features
-    inference_state1 = processor._add_box_prompt(
-        box=norm_box_cxcywh, label=True, state=inference_state1
+    inference_state1 = processor.add_prompt(
+        {"type": "box", "box": norm_box_cxcywh, "label": True}, inference_state1
     )
     
     # Extract the encoded prompt and mask for reuse
