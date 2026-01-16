@@ -9,6 +9,8 @@ import torch.nn as nn
 import torchvision
 from typing_extensions import override
 
+from sam3.utils import console
+
 from .act_ckpt_utils import activation_ckpt_wrapper
 from .box_ops import box_cxcywh_to_xyxy
 from .model_misc import get_clones
@@ -586,16 +588,36 @@ class SequenceGeometryEncoder(nn.Module):
         self.mask_encoder = mask_encoder
         self.use_act_ckpt = use_act_ckpt
 
+        # Print initialization flags
+        console.print("[bold magenta]SequenceGeometryEncoder[/bold magenta] initialized:")
+        console.print(f"  [dim]points_direct_project:[/dim] [green]{points_direct_project}[/green]" if points_direct_project else f"  [dim]points_direct_project:[/dim] [red]{points_direct_project}[/red]")
+        console.print(f"  [dim]points_pool:[/dim] [green]{points_pool}[/green]" if points_pool else f"  [dim]points_pool:[/dim] [red]{points_pool}[/red]")
+        console.print(f"  [dim]points_pos_enc:[/dim] [green]{points_pos_enc}[/green]" if points_pos_enc else f"  [dim]points_pos_enc:[/dim] [red]{points_pos_enc}[/red]")
+        console.print(f"  [dim]boxes_direct_project:[/dim] [green]{boxes_direct_project}[/green]" if boxes_direct_project else f"  [dim]boxes_direct_project:[/dim] [red]{boxes_direct_project}[/red]")
+        console.print(f"  [dim]boxes_pool:[/dim] [green]{boxes_pool}[/green]" if boxes_pool else f"  [dim]boxes_pool:[/dim] [red]{boxes_pool}[/red]")
+        console.print(f"  [dim]boxes_pos_enc:[/dim] [green]{boxes_pos_enc}[/green]" if boxes_pos_enc else f"  [dim]boxes_pos_enc:[/dim] [red]{boxes_pos_enc}[/red]")
+        console.print(f"  [dim]mask_encoder:[/dim] [green]{mask_encoder is not None}[/green]" if mask_encoder is not None else f"  [dim]mask_encoder:[/dim] [red]{mask_encoder is not None}[/red]")
+        console.print(f"  [dim]add_mask_label:[/dim] [green]{add_mask_label}[/green]" if add_mask_label else f"  [dim]add_mask_label:[/dim] [red]{add_mask_label}[/red]")
+
     def _encode_points(self, points, points_mask, points_labels, img_feats):
         points_embed = None
         n_points, bs = points.shape[:2]
 
+        if n_points == 0:
+            console.warning("_encode_points", "No points to encode (n_points=0)")
+            # Return zeros for empty points
+            return torch.zeros(0, bs, self.d_model, device=points.device), points_mask
+
         if self.points_direct_project is not None:
+            console.success("_encode_points", "Using points_direct_project")
             proj = self.points_direct_project(points)
             assert points_embed is None
             points_embed = proj
+        else:
+            console.skip("_encode_points", "Skipping points_direct_project")
 
         if self.points_pool_project is not None:
+            console.success("_encode_points", "Using points_pool")
             # points are [Num_points, bs, 2], normalized in [0, 1]
             # the grid needs to be [Bs, H_out, W_out, 2] normalized in [-1,1]
             # Will take H_out = num_points, w_out = 1
@@ -612,8 +634,11 @@ class SequenceGeometryEncoder(nn.Module):
                 points_embed = proj
             else:
                 points_embed = points_embed + proj
+        else:
+            console.skip("_encode_points", "Skipping points_pool")
 
         if self.points_pos_enc_project is not None:
+            console.success("_encode_points", "Using points_pos_enc")
             x, y = points.unbind(-1)
             enc_x, enc_y = self.pos_enc._encode_xy(x.flatten(), y.flatten())
             enc_x = enc_x.view(n_points, bs, enc_x.shape[-1])
@@ -625,6 +650,8 @@ class SequenceGeometryEncoder(nn.Module):
                 points_embed = proj
             else:
                 points_embed = points_embed + proj
+        else:
+            console.skip("_encode_points", "Skipping points_pos_enc")
 
         type_embed = self.label_embed(points_labels.long())
         return type_embed + points_embed, points_mask
@@ -633,12 +660,21 @@ class SequenceGeometryEncoder(nn.Module):
         boxes_embed = None
         n_boxes, bs = boxes.shape[:2]
 
+        if n_boxes == 0:
+            console.warning("_encode_boxes", "No boxes to encode (n_boxes=0)")
+            # Return zeros for empty boxes
+            return torch.zeros(0, bs, self.d_model, device=boxes.device), boxes_mask
+
         if self.boxes_direct_project is not None:
+            console.success("_encode_boxes", "Using boxes_direct_project")
             proj = self.boxes_direct_project(boxes)
             assert boxes_embed is None
             boxes_embed = proj
+        else:
+            console.skip("_encode_boxes", "Skipping boxes_direct_project")
 
         if self.boxes_pool_project is not None:
+            console.success("_encode_boxes", "Using boxes_pool")
             H, W = img_feats.shape[-2:]
 
             # boxes are [Num_boxes, bs, 4], normalized in [0, 1]
@@ -663,8 +699,11 @@ class SequenceGeometryEncoder(nn.Module):
                 boxes_embed = proj
             else:
                 boxes_embed = boxes_embed + proj
+        else:
+            console.skip("_encode_boxes", "Skipping boxes_pool")
 
         if self.boxes_pos_enc_project is not None:
+            console.success("_encode_boxes", "Using boxes_pos_enc")
             cx, cy, w, h = boxes.unbind(-1)
             enc = self.pos_enc.encode_boxes(
                 cx.flatten(), cy.flatten(), w.flatten(), h.flatten()
@@ -676,6 +715,8 @@ class SequenceGeometryEncoder(nn.Module):
                 boxes_embed = proj
             else:
                 boxes_embed = boxes_embed + proj
+        else:
+            console.skip("_encode_boxes", "Skipping boxes_pos_enc")
 
         type_embed = self.label_embed(boxes_labels.long())
         return type_embed + boxes_embed, boxes_mask
@@ -688,6 +729,7 @@ class SequenceGeometryEncoder(nn.Module):
         img_feats: torch.Tensor = None,
     ):
         n_masks, bs = masks.shape[:2]
+        console.success("_encode_masks", f"Encoding {n_masks} mask(s)")
         assert n_masks == 1, (
             "We assume one mask per prompt for now. Code should still be functional if this assertion is removed."
         )
@@ -697,12 +739,14 @@ class SequenceGeometryEncoder(nn.Module):
         ], (
             f"Expected attn_mask to be of shape {bs}x{n_masks}. Got {list(attn_mask.shape)}."
         )
+        console.success("_encode_masks", f"Using mask_encoder: {type(self.mask_encoder).__name__}")
         masks, pos = self.mask_encoder(
             masks=masks.flatten(0, 1).float(),
             pix_feat=img_feats,
         )
         H, W = masks.shape[-2:]
         n_tokens_per_mask = H * W
+        console.info("_encode_masks", f"Mask encoded to {H}x{W} = {n_tokens_per_mask} tokens")
         # NOTE: We directly add pos enc here as we usually don't keep track of pos encoding for the concatenated prompt (text, other geometric prompts). Might need to do some refactoring for more flexibility.
         masks = masks + pos
         masks = masks.view(n_masks, bs, *masks.shape[1:]).flatten(
@@ -711,7 +755,10 @@ class SequenceGeometryEncoder(nn.Module):
         masks = masks.permute(0, 3, 1, 2).flatten(0, 1)  # n_masks * H*W x bs x C
         attn_mask = attn_mask.repeat_interleave(n_tokens_per_mask, dim=1)
         if self.add_mask_label:
+            console.success("_encode_masks", "Adding mask label embedding")
             masks = masks + self.mask_label_embed(mask_labels.long())
+        else:
+            console.skip("_encode_masks", "Skipping mask label embedding")
         return masks, attn_mask
 
     def forward(self, geo_prompt: Prompt, img_feats, img_sizes, img_pos_embeds=None):
@@ -724,6 +771,7 @@ class SequenceGeometryEncoder(nn.Module):
         masks = geo_prompt.mask_embeddings
         masks_mask = geo_prompt.mask_mask
         masks_labels = geo_prompt.mask_labels
+
         seq_first_img_feats = img_feats[-1]  # [H*W, B, C]
         seq_first_img_pos_embeds = (
             img_pos_embeds[-1]
@@ -806,6 +854,11 @@ class SequenceGeometryEncoder(nn.Module):
             )
             if points.size(0) == boxes.size(0) == 0:
                 return masks_embed, masks_mask
+        else:
+            if masks is None:
+                console.warning("forward", "No masks provided")
+            elif self.mask_encoder is None:
+                console.warning("forward", "mask_encoder not configured, skipping")
         bs = final_embeds.shape[1]
         assert final_mask.shape[0] == bs
         if self.cls_embed is not None:
