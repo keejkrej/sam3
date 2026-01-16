@@ -142,7 +142,7 @@ class Sam3Processor:
         return state
 
     @torch.inference_mode()
-    def _add_box_prompt(self, box: List, label: bool, state: Dict, pool_only: bool = False):
+    def _add_box_prompt(self, box: List, label: bool, state: Dict):
         """Adds a box prompt and encodes it without running inference."""
         if "backbone_out" not in state:
             raise ValueError("You must call set_image before _add_box_prompt")
@@ -169,7 +169,6 @@ class Sam3Processor:
                 backbone_out=state["backbone_out"],
                 find_input=self.find_stage,
                 geometric_prompt=state["geometric_prompt"],
-                pool_only=pool_only,
             )
         
         # Store encoded prompts directly in state

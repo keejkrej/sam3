@@ -172,7 +172,6 @@ class Sam3Image(torch.nn.Module):
         visual_prompt_mask=None,
         encode_text=True,
         prev_mask_pred=None,
-        pool_only=False,
     ):
         # index text features (note that regardless of early or late fusion, the batch size of
         # `txt_feats` is always the number of *prompts* in the encoder)
@@ -191,7 +190,6 @@ class Sam3Image(torch.nn.Module):
             img_feats=img_feats,
             img_sizes=vis_feat_sizes,
             img_pos_embeds=img_pos_embeds,
-            pool_only=pool_only,
         )
         if visual_prompt_embed is None:
             visual_prompt_embed = torch.zeros(

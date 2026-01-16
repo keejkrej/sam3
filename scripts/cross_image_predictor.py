@@ -100,7 +100,7 @@ def main():
             box_cxcywh = box_xywh_to_cxcywh(box_xywh)
             norm_box = normalize_bbox(box_cxcywh, w1, h1).flatten().tolist()
 
-            state1 = processor._add_box_prompt(box=norm_box, label=True, state=state1, pool_only=args.pool_only)
+            state1 = processor._add_box_prompt(box=norm_box, label=True, state=state1)
             prompt_type = "box"
 
         # Run inference on image 1 to see what's detected and save plot
@@ -128,8 +128,8 @@ def main():
         saved_prompt_mask = state1["prompt_mask"]
 
         # Disable position-related components for second pass (use only visual features)
-        model.input_geometry_encoder.boxes_direct_project = None
-        model.input_geometry_encoder.boxes_pos_enc_project = None
+        # model.geometry_encoder.boxes_direct_project = None
+        # model.geometry_encoder.boxes_pos_enc_project = None
 
         print(f"Applying extracted {prompt_type} prompt to {args.img2}...")
 
