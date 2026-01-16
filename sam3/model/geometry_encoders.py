@@ -762,6 +762,8 @@ class SequenceGeometryEncoder(nn.Module):
         return masks, attn_mask
 
     def forward(self, geo_prompt: Prompt, img_feats, img_sizes, img_pos_embeds=None):
+        console.info("forward", f"Starting forward pass with img_feats len={len(img_feats)}")
+        
         points = geo_prompt.point_embeddings
         points_mask = geo_prompt.point_mask
         points_labels = geo_prompt.point_labels
@@ -772,6 +774,8 @@ class SequenceGeometryEncoder(nn.Module):
         masks_mask = geo_prompt.mask_mask
         masks_labels = geo_prompt.mask_labels
 
+        console.info("forward", f"Input shapes - points: {points.shape if points is not None else None}, boxes: {boxes.shape if boxes is not None else None}, masks: {masks.shape if masks is not None else None}")
+
         seq_first_img_feats = img_feats[-1]  # [H*W, B, C]
         seq_first_img_pos_embeds = (
             img_pos_embeds[-1]
@@ -779,7 +783,10 @@ class SequenceGeometryEncoder(nn.Module):
             else torch.zeros_like(seq_first_img_feats)
         )
 
+        console.info("forward", f"seq_first_img_feats shape: {seq_first_img_feats.shape}")
+
         if self.points_pool_project or self.boxes_pool_project:
+            console.info("forward", f"Pool projection enabled (points_pool_project={self.points_pool_project}, boxes_pool_project={self.boxes_pool_project})")
             assert len(img_feats) == len(img_sizes)
             cur_img_feat = img_feats[-1]
             cur_img_feat = self.img_pre_norm(cur_img_feat)
@@ -790,8 +797,12 @@ class SequenceGeometryEncoder(nn.Module):
             cur_img_feat = cur_img_feat.permute(1, 2, 0)
             cur_img_feat = cur_img_feat.view(N, C, H, W)
             img_feats = cur_img_feat
+            console.info("forward", f"Pool projected img_feats shape: {img_feats.shape}")
+        else:
+            console.info("forward", "Pool projection disabled, using img_feats as-is")
 
         if self.encode_boxes_as_points:
+            console.info("forward", "Encoding boxes as points")
             assert boxes is not None
             assert geo_prompt.box_mask is not None
             assert geo_prompt.box_labels is not None
@@ -825,43 +836,60 @@ class SequenceGeometryEncoder(nn.Module):
                 boxes_mask,
             )
             points_labels = points_labels.squeeze(-1)
+            console.info("forward", f"After box-to-point conversion - points shape: {points.shape}")
+        else:
+            console.info("forward", "encode_boxes_as_points=False, boxes will be encoded separately")
 
+        console.info("forward", "Encoding points")
         final_embeds, final_mask = self._encode_points(
             points=points,
             points_mask=points_mask,
             points_labels=points_labels,
             img_feats=img_feats,
         )
+        console.info("forward", f"After _encode_points - final_embeds shape: {final_embeds.shape}, final_mask shape: {final_mask.shape}")
 
         if not self.encode_boxes_as_points:
+            console.info("forward", "Encoding boxes separately")
             boxes_embeds, boxes_mask = self._encode_boxes(
                 boxes=boxes,
                 boxes_mask=boxes_mask,
                 boxes_labels=boxes_labels,
                 img_feats=img_feats,
             )
+            console.info("forward", f"boxes_embeds shape: {boxes_embeds.shape}")
 
             final_embeds, final_mask = concat_padded_sequences(
                 final_embeds, final_mask, boxes_embeds, boxes_mask
             )
+            console.info("forward", f"After concat with boxes - final_embeds shape: {final_embeds.shape}")
+        else:
+            console.info("forward", "Skipping separate box encoding (boxes already encoded as points)")
 
         if masks is not None and self.mask_encoder is not None:
+            console.info("forward", "Encoding masks")
             masks_embed, masks_mask = self._encode_masks(
                 masks=masks,
                 attn_mask=masks_mask,
                 mask_labels=masks_labels,
                 img_feats=img_feats,
             )
+            console.info("forward", f"masks_embed shape: {masks_embed.shape}")
             if points.size(0) == boxes.size(0) == 0:
+                console.info("forward", "Returning early with only mask embeddings")
                 return masks_embed, masks_mask
+            else:
+                console.info("forward", "Points/boxes present, will concatenate masks later")
         else:
             if masks is None:
                 console.warning("forward", "No masks provided")
             elif self.mask_encoder is None:
                 console.warning("forward", "mask_encoder not configured, skipping")
+
         bs = final_embeds.shape[1]
         assert final_mask.shape[0] == bs
         if self.cls_embed is not None:
+            console.info("forward", "Adding cls embedding")
             cls = self.cls_embed.weight.view(1, 1, self.d_model).repeat(1, bs, 1)
             cls_mask = torch.zeros(
                 bs, 1, dtype=final_mask.dtype, device=final_mask.device
@@ -869,11 +897,17 @@ class SequenceGeometryEncoder(nn.Module):
             final_embeds, final_mask = concat_padded_sequences(
                 final_embeds, final_mask, cls, cls_mask
             )
+        else:
+            console.info("forward", "No cls_embed configured, skipping")
 
         if self.final_proj is not None:
+            console.info("forward", "Applying final projection")
             final_embeds = self.norm(self.final_proj(final_embeds))
+        else:
+            console.info("forward", "No final_proj configured, skipping projection")
 
         if self.encode is not None:
+            console.info("forward", f"Running {len(self.encode)} encoder layers")
             for lay in self.encode:
                 final_embeds = activation_ckpt_wrapper(lay)(
                     tgt=final_embeds,
@@ -883,9 +917,18 @@ class SequenceGeometryEncoder(nn.Module):
                     act_ckpt_enable=self.training and self.use_act_ckpt,
                 )
             final_embeds = self.encode_norm(final_embeds)
+            console.info("forward", f"After encoder layers - final_embeds shape: {final_embeds.shape}")
+        else:
+            console.info("forward", "No encoder layers configured, skipping encoding")
+
         # Finally, concat mask embeddings if any
         if masks is not None and self.mask_encoder is not None:
+            console.info("forward", "Concatenating mask embeddings to final output")
             final_embeds, final_mask = concat_padded_sequences(
                 final_embeds, final_mask, masks_embed, masks_mask
             )
+        else:
+            console.info("forward", "No mask embeddings to concatenate")
+
+        console.info("forward", f"Forward complete - output shape: {final_embeds.shape}")
         return final_embeds, final_mask
