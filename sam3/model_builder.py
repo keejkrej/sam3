@@ -230,8 +230,28 @@ def _create_segmentation_head(compile_mode=None):
     return segmentation_head
 
 
-def _create_geometry_encoder():
-    """Create geometry encoder with all its components."""
+def _create_geometry_encoder(geo_config: dict = None):
+    """Create geometry encoder with all its components.
+    
+    Args:
+        geo_config: Optional dict with keys like 'points_direct_project', 'points_pool', etc.
+                   If None, uses default values (all True).
+    """
+    # Default config
+    config = {
+        'points_direct_project': True,
+        'points_pool': True,
+        'points_pos_enc': True,
+        'boxes_direct_project': True,
+        'boxes_pool': True,
+        'boxes_pos_enc': True,
+        'masks_direct_project': True,
+        'masks_pool': True,
+        'masks_pos_enc': True,
+    }
+    if geo_config:
+        config.update(geo_config)
+    
     # Create position encoding for geometry encoder
     geo_pos_enc = _create_position_encoding()
     # Create CX block for fuser
@@ -270,22 +290,22 @@ def _create_geometry_encoder():
     input_geometry_encoder = SequenceGeometryEncoder(
         pos_enc=geo_pos_enc,
         encode_boxes_as_points=False,
-        points_direct_project=True,
-        points_pool=True,
-        points_pos_enc=True,
-        boxes_direct_project=True,
-        boxes_pool=True,
-        boxes_pos_enc=True,
+        points_direct_project=config['points_direct_project'],
+        points_pool=config['points_pool'],
+        points_pos_enc=config['points_pos_enc'],
+        boxes_direct_project=config['boxes_direct_project'],
+        boxes_pool=config['boxes_pool'],
+        boxes_pos_enc=config['boxes_pos_enc'],
         d_model=256,
         num_layers=3,
         layer=geo_layer,
         use_act_ckpt=True,
         add_cls=True,
         add_post_encode_proj=True,
-        # Mask-as-box encoding (mirrors boxes)
-        masks_direct_project=True,
-        masks_pool=True,
-        masks_pos_enc=True,
+        # Mask-as-box encoding
+        masks_direct_project=config['masks_direct_project'],
+        masks_pool=config['masks_pool'],
+        masks_pos_enc=config['masks_pos_enc'],
     )
     return input_geometry_encoder
 
@@ -594,6 +614,8 @@ def build_sam3_image_model(
     enable_segmentation=True,
     enable_inst_interactivity=False,
     compile=False,
+    # Geometry encoder config
+    geo_config: dict = None,
 ):
     """
     Build SAM3 image model
@@ -639,7 +661,7 @@ def build_sam3_image_model(
     )
 
     # Create geometry encoder
-    input_geometry_encoder = _create_geometry_encoder()
+    input_geometry_encoder = _create_geometry_encoder(geo_config=geo_config)
     if enable_inst_interactivity:
         sam3_pvs_base = build_tracker(apply_temporal_disambiguation=False)
         inst_predictor = SAM3InteractiveImagePredictor(sam3_pvs_base)
