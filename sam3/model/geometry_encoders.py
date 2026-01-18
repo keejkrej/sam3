@@ -839,6 +839,14 @@ class SequenceGeometryEncoder(nn.Module):
             scale = torch.tensor([W, H, W, H], dtype=boxes_xyxy.dtype, device=boxes_xyxy.device)
             scale = scale.view(1, 1, 4)
             boxes_xyxy = boxes_xyxy * scale
+            
+            # Resize mask to feature resolution and mask the features
+            resized_mask = torch.nn.functional.interpolate(
+                masks.flatten(0, 1).float(), size=(H, W), mode='bilinear', align_corners=False
+            ).view(n_masks, bs, 1, H, W).transpose(0, 1).flatten(0, 1)  # [bs * n_masks, 1, H, W]
+            img_feats = img_feats * (resized_mask > 0.5).float()
+            
+            # ROI align from masked features
             sampled = torchvision.ops.roi_align(
                 img_feats, boxes_xyxy.float().transpose(0, 1).unbind(0), self.roi_size
             )
