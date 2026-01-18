@@ -110,6 +110,140 @@ class Sam3Processor:
             )
         return state
 
+    def _mask_to_bbox(self, mask):
+        """Convert mask to bounding box [x, y, w, h]"""
+        nonzero = torch.nonzero(mask > 0.5, as_tuple=False)
+        if len(nonzero) == 0:
+            return [0, 0, mask.shape[-1], mask.shape[-2]]
+        
+        y_coords = nonzero[:, 0]
+        x_coords = nonzero[:, 1]
+        
+        y_min, y_max = y_coords.min(), y_coords.max()
+        x_min, x_max = x_coords.min(), x_coords.max()
+        
+        return [x_min.item(), y_min.item(), 
+                (x_max - x_min + 1).item(), (y_max - y_min + 1).item()]
+
+    def _mask_to_grid_simple(self, mask, spacing=16, max_points=50):
+        """
+        Simple uniform grid sampling within mask
+        
+        Args:
+            mask: [H, W] binary mask
+            spacing: Pixel spacing between grid points
+            max_points: Maximum number of points to return
+        
+        Returns:
+            points: List of [x, y] pixel coordinates
+            labels: List of boolean labels (all True)
+        """
+        H, W = mask.shape[-2:]
+        points = []
+        
+        # Sample at regular intervals
+        for y in range(0, H, spacing):
+            for x in range(0, W, spacing):
+                if len(points) >= max_points:
+                    break
+                if mask[y, x] > 0.5:
+                    points.append([x, y])
+            if len(points) >= max_points:
+                break
+        
+        return points, [True] * len(points)
+
+    def _mask_to_grid_hybrid(self, mask, max_points=100, boundary_ratio=0.3):
+        """
+        Hybrid sampling: boundary points + interior grid
+        
+        Args:
+            mask: [H, W] binary mask  
+            max_points: Total maximum points to sample
+            boundary_ratio: Fraction of points for boundary (0.0-1.0)
+        
+        Returns:
+            points: List of [x, y] pixel coordinates
+            labels: List of boolean labels (all True)
+        """
+        import torch.nn.functional as F
+        
+        H, W = mask.shape[-2:]
+        points = []
+        
+        # 1. Extract boundary points using morphological operations
+        mask_float = mask.float().unsqueeze(0).unsqueeze(0)  # [1, 1, H, W]
+        
+        # Create simple 3x3 kernel for boundary detection
+        kernel = torch.ones(1, 1, 3, 3, device=mask.device, dtype=mask_float.dtype)
+        dilated = F.conv2d(mask_float, kernel, padding=1) > 0
+        eroded = F.conv2d(mask_float, kernel, padding=1) == 9
+        boundary = dilated & (~eroded)
+        
+        # Sample boundary points
+        boundary_coords = torch.nonzero(boundary.squeeze(), as_tuple=False)
+        n_boundary = int(max_points * boundary_ratio)
+        
+        if len(boundary_coords) > 0:
+            # Uniformly sample boundary points
+            if len(boundary_coords) > n_boundary:
+                step = len(boundary_coords) // n_boundary
+                for i in range(0, len(boundary_coords), step):
+                    if len(points) < n_boundary:
+                        y, x = boundary_coords[i][0], boundary_coords[i][1]
+                        points.append([x.item(), y.item()])
+            else:
+                for coord in boundary_coords:
+                    y, x = coord[0], coord[1]
+                    points.append([x.item(), y.item()])
+        
+        # 2. Sample interior grid points
+        remaining_points = max_points - len(points)
+        if remaining_points > 0:
+            interior_mask = mask.float() * (1.0 - boundary.squeeze().float())
+            interior_mask = (interior_mask > 0.5).float()
+            
+            # Calculate adaptive spacing for interior
+            mask_area = interior_mask.sum().item()
+            if mask_area > 0:
+                spacing = max(8, int((mask_area / remaining_points) ** 0.5))
+                
+                for y in range(0, H, spacing):
+                    for x in range(0, W, spacing):
+                        if len(points) >= max_points:
+                            break
+                        if interior_mask[y, x] > 0.5:
+                            points.append([x, y])
+                    if len(points) >= max_points:
+                        break
+        
+        # 3. Add centroid if not already present
+        if len(points) < max_points:
+            coords = torch.nonzero(mask > 0.5, as_tuple=False)
+            if len(coords) > 0:
+                centroid_y = coords[:, 0].float().mean().round().long()
+                centroid_x = coords[:, 1].float().mean().round().long()
+                centroid_point = [centroid_x.item(), centroid_y.item()]
+                
+                # Avoid duplicates
+                if centroid_point not in points:
+                    points.append(centroid_point)
+        
+        # Fallback to simple grid if no points found
+        if len(points) == 0:
+            # Fallback to simple uniform grid
+            spacing = max(8, int((H * W / max_points) ** 0.5))
+            for y in range(0, H, spacing):
+                for x in range(0, W, spacing):
+                    if len(points) >= max_points:
+                        break
+                    if mask[y, x] > 0.5:
+                        points.append([x, y])
+                if len(points) >= max_points:
+                    break
+        
+        return points, [True] * len(points)
+
     @torch.inference_mode()
     def add_prompt(self, payload: Dict, state: Dict) -> Dict:
         """Add a prompt using a unified payload interface.
@@ -187,6 +321,8 @@ class Sam3Processor:
         
         elif prompt_type == "mask":
             mask = payload["mask"]
+            encoding_method = payload.get("encoding_method", "default")
+            
             # Get original image dimensions
             img_h = state["original_height"]
             img_w = state["original_width"]
@@ -202,14 +338,76 @@ class Sam3Processor:
                 mask_pil = mask_pil.resize((img_w, img_h), Image.Resampling.NEAREST)
                 mask = torch.from_numpy(np.array(mask_pil) / 255.0).float()
             
-            # Resize to processor resolution
-            mask_pil = Image.fromarray((mask.numpy() * 255).astype(np.uint8))
-            mask_resized = mask_pil.resize((self.resolution, self.resolution), Image.Resampling.NEAREST)
-            mask_tensor = torch.from_numpy(np.array(mask_resized) / 255.0).float()
+            if encoding_method == "default":
+                # Original mask encoding logic
+                # Resize to processor resolution
+                mask_pil = Image.fromarray((mask.numpy() * 255).astype(np.uint8))
+                mask_resized = mask_pil.resize((self.resolution, self.resolution), Image.Resampling.NEAREST)
+                mask_tensor = torch.from_numpy(np.array(mask_resized) / 255.0).float()
+                
+                masks = mask_tensor.to(device=self.device, dtype=torch.float32).view(1, 1, 1, *mask_tensor.shape[-2:])
+                labels = torch.tensor([payload["label"]], device=self.device, dtype=torch.long).view(1, 1)
+                state["geometric_prompt"].append_masks(masks, labels)
+                
+            elif encoding_method == "box":
+                # Convert mask to bounding box
+                bbox = self._mask_to_bbox(mask)
+                self.add_prompt({
+                    "type": "box",
+                    "box": bbox,
+                    "label": payload["label"]
+                }, state)
+                
+            elif encoding_method == "grid_simple":
+                # Simple uniform grid sampling
+                spacing = payload.get("spacing", 16)
+                max_points = payload.get("max_points", 50)
+                
+                points, labels = self._mask_to_grid_simple(
+                    mask, spacing=spacing, max_points=max_points
+                )
+                
+                # Add as point prompts
+                if points:
+                    normalized_points = [
+                        [x / img_w, y / img_h] for x, y in points
+                    ]
+                    
+                    points_tensor = torch.tensor(
+                        normalized_points, device=self.device, dtype=torch.float32
+                    ).view(len(points), 1, 2)
+                    labels_tensor = torch.tensor(
+                        labels, device=self.device, dtype=torch.bool
+                    ).view(len(points), 1)
+                    
+                    state["geometric_prompt"].append_points(points_tensor, labels_tensor)
+                    
+            elif encoding_method == "grid_hybrid":
+                # Hybrid boundary + interior sampling
+                max_points = payload.get("max_points", 100)
+                boundary_ratio = payload.get("boundary_ratio", 0.3)
+                
+                points, labels = self._mask_to_grid_hybrid(
+                    mask, max_points=max_points, boundary_ratio=boundary_ratio
+                )
+                
+                # Add as point prompts
+                if points:
+                    normalized_points = [
+                        [x / img_w, y / img_h] for x, y in points
+                    ]
+                    
+                    points_tensor = torch.tensor(
+                        normalized_points, device=self.device, dtype=torch.float32
+                    ).view(len(points), 1, 2)
+                    labels_tensor = torch.tensor(
+                        labels, device=self.device, dtype=torch.bool
+                    ).view(len(points), 1)
+                    
+                    state["geometric_prompt"].append_points(points_tensor, labels_tensor)
             
-            masks = mask_tensor.to(device=self.device, dtype=torch.float32).view(1, 1, 1, *mask_tensor.shape[-2:])
-            labels = torch.tensor([payload["label"]], device=self.device, dtype=torch.long).view(1, 1)
-            state["geometric_prompt"].append_masks(masks, labels)
+            else:
+                raise ValueError(f"Unsupported encoding_method: {encoding_method}")
         
         # Encode prompts
         with torch.profiler.record_function("SAM3Image._encode_prompt"):
