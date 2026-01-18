@@ -840,16 +840,26 @@ class SequenceGeometryEncoder(nn.Module):
             scale = scale.view(1, 1, 4)
             boxes_xyxy = boxes_xyxy * scale
             
-            # Resize mask to feature resolution and mask the features
-            resized_mask = torch.nn.functional.interpolate(
-                masks.flatten(0, 1).float(), size=(H, W), mode='bilinear', align_corners=False
-            ).view(n_masks, bs, 1, H, W).transpose(0, 1).flatten(0, 1)  # [bs * n_masks, 1, H, W]
-            img_feats = img_feats * (resized_mask > 0.5).float()
-            
-            # ROI align from masked features
+            # ROI align features from bbox
             sampled = torchvision.ops.roi_align(
                 img_feats, boxes_xyxy.float().transpose(0, 1).unbind(0), self.roi_size
-            )
+            )  # [bs * n_masks, C, roi_size, roi_size]
+            
+            # Resize mask to roi_size and use as soft weights
+            H_mask, W_mask = masks.shape[-2:]
+            masks_flat = masks.flatten(0, 1).float()  # [n_masks * bs, 1, H_mask, W_mask]
+            masks_flat = masks_flat.view(n_masks, bs, 1, H_mask, W_mask).transpose(0, 1).flatten(0, 1)  # [bs * n_masks, 1, H_mask, W_mask]
+            mask_scale = torch.tensor([W_mask, H_mask, W_mask, H_mask], dtype=boxes_xyxy.dtype, device=boxes_xyxy.device).view(1, 1, 4)
+            boxes_mask_res = box_cxcywh_to_xyxy(boxes) * mask_scale
+            mask_roi = torchvision.ops.roi_align(
+                masks_flat, boxes_mask_res.float().transpose(0, 1).unbind(0), self.roi_size
+            )  # [bs * n_masks, 1, roi_size, roi_size]
+            
+            # Blend: masked features + (1-mask) * original features
+            # This keeps full info but emphasizes masked region
+            sampled = sampled * (1.0 + mask_roi)  # Boost masked regions instead of zeroing unmasked
+            console.info("_encode_masks_2", f"Mask ROI mean: {mask_roi.mean():.3f}, boosted features")
+            
             proj = self.masks_pool_project(sampled)
             proj = proj.view(bs, n_masks, self.d_model).transpose(0, 1)
             if masks_embed is None:
