@@ -282,6 +282,10 @@ def _create_geometry_encoder():
         use_act_ckpt=True,
         add_cls=True,
         add_post_encode_proj=True,
+        # Mask-as-box encoding (mirrors boxes)
+        masks_direct_project=True,
+        masks_pool=True,
+        masks_pos_enc=True,
     )
     return input_geometry_encoder
 
@@ -544,6 +548,32 @@ def _load_checkpoint(model, checkpoint_path):
             f"loaded {checkpoint_path} and found "
             f"missing and/or unexpected keys:\n{missing_keys=}"
         )
+
+    # Initialize mask projections from box weights
+    _init_mask_projections_from_boxes(model)
+
+
+def _init_mask_projections_from_boxes(model):
+    """Initialize mask projection weights from box projection weights."""
+    geo_enc = model.geometry_encoder
+    
+    # Copy boxes_direct_project -> masks_direct_project
+    if geo_enc.boxes_direct_project is not None and geo_enc.masks_direct_project is not None:
+        geo_enc.masks_direct_project.weight.data.copy_(geo_enc.boxes_direct_project.weight.data)
+        geo_enc.masks_direct_project.bias.data.copy_(geo_enc.boxes_direct_project.bias.data)
+        print("Initialized masks_direct_project from boxes_direct_project")
+
+    # Copy boxes_pool_project -> masks_pool_project
+    if geo_enc.boxes_pool_project is not None and geo_enc.masks_pool_project is not None:
+        geo_enc.masks_pool_project.weight.data.copy_(geo_enc.boxes_pool_project.weight.data)
+        geo_enc.masks_pool_project.bias.data.copy_(geo_enc.boxes_pool_project.bias.data)
+        print("Initialized masks_pool_project from boxes_pool_project")
+
+    # Copy boxes_pos_enc_project -> masks_pos_enc_project
+    if geo_enc.boxes_pos_enc_project is not None and geo_enc.masks_pos_enc_project is not None:
+        geo_enc.masks_pos_enc_project.weight.data.copy_(geo_enc.boxes_pos_enc_project.weight.data)
+        geo_enc.masks_pos_enc_project.bias.data.copy_(geo_enc.boxes_pos_enc_project.bias.data)
+        print("Initialized masks_pos_enc_project from boxes_pos_enc_project")
 
 
 def _setup_device_and_mode(model, device, eval_mode):

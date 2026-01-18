@@ -509,6 +509,10 @@ class SequenceGeometryEncoder(nn.Module):
         mask_encoder: MaskEncoder = None,
         add_mask_label: bool = False,
         use_act_ckpt: bool = False,
+        # Mask-as-box encoding (used when mask_encoder is None)
+        masks_direct_project: bool = True,
+        masks_pool: bool = True,
+        masks_pos_enc: bool = True,
     ):
         super().__init__()
 
@@ -560,6 +564,19 @@ class SequenceGeometryEncoder(nn.Module):
                 )
             if boxes_pos_enc:
                 self.boxes_pos_enc_project = nn.Linear(self.d_model + 2, self.d_model)
+
+        # Mask-as-box projections (mirroring boxes)
+        self.masks_direct_project = None
+        self.masks_pool_project = None
+        self.masks_pos_enc_project = None
+        if masks_direct_project:
+            self.masks_direct_project = nn.Linear(4, self.d_model)
+        if masks_pool:
+            self.masks_pool_project = nn.Conv2d(
+                self.d_model, self.d_model, self.roi_size
+            )
+        if masks_pos_enc:
+            self.masks_pos_enc_project = nn.Linear(self.d_model + 2, self.d_model)
 
         self.final_proj = None
         if add_post_encode_proj:
@@ -761,6 +778,95 @@ class SequenceGeometryEncoder(nn.Module):
             console.skip("_encode_masks", "Skipping mask label embedding")
         return masks, attn_mask
 
+    def _encode_masks_2(
+        self,
+        masks: torch.Tensor,      # [n_masks, bs, 1, H, W]
+        masks_mask: torch.Tensor, # [bs, n_masks]
+        mask_labels: torch.Tensor,
+        img_feats: torch.Tensor,
+    ):
+        """
+        Encode masks by converting them to bounding boxes and using box encoding.
+        This bypasses the need for mask_encoder weights.
+        """
+        n_masks, bs = masks.shape[:2]
+        console.success("_encode_masks_2", f"Encoding {n_masks} mask(s) as boxes")
+
+        if n_masks == 0:
+            console.warning("_encode_masks_2", "No masks to encode")
+            return torch.zeros(0, bs, self.d_model, device=masks.device), masks_mask
+
+        # Convert masks to bounding boxes in normalized cxcywh format
+        # masks: [n_masks, bs, 1, H, W]
+        H_mask, W_mask = masks.shape[-2:]
+        
+        boxes_list = []
+        for i in range(n_masks):
+            for j in range(bs):
+                mask = masks[i, j, 0]  # [H, W]
+                # Find non-zero indices
+                nonzero = torch.nonzero(mask > 0.5, as_tuple=True)
+                if len(nonzero[0]) > 0:
+                    y_min, y_max = nonzero[0].min(), nonzero[0].max()
+                    x_min, x_max = nonzero[1].min(), nonzero[1].max()
+                    # Convert to normalized cxcywh
+                    cx = (x_min + x_max) / 2 / W_mask
+                    cy = (y_min + y_max) / 2 / H_mask
+                    w = (x_max - x_min + 1) / W_mask
+                    h = (y_max - y_min + 1) / H_mask
+                    boxes_list.append([cx.item(), cy.item(), w.item(), h.item()])
+                else:
+                    # Empty mask - use center with small box
+                    boxes_list.append([0.5, 0.5, 0.1, 0.1])
+        
+        # Reshape to [n_masks, bs, 4]
+        boxes = torch.tensor(boxes_list, device=masks.device, dtype=masks.dtype)
+        boxes = boxes.view(n_masks, bs, 4)
+        console.info("_encode_masks_2", f"Converted to boxes shape: {boxes.shape}")
+
+        # Use mask-specific projections (mirroring _encode_boxes)
+        masks_embed = None
+
+        if self.masks_direct_project is not None:
+            console.success("_encode_masks_2", "Using masks_direct_project")
+            proj = self.masks_direct_project(boxes)
+            masks_embed = proj
+
+        if self.masks_pool_project is not None:
+            console.success("_encode_masks_2", "Using masks_pool (roi_align)")
+            H, W = img_feats.shape[-2:]
+            boxes_xyxy = box_cxcywh_to_xyxy(boxes)
+            scale = torch.tensor([W, H, W, H], dtype=boxes_xyxy.dtype, device=boxes_xyxy.device)
+            scale = scale.view(1, 1, 4)
+            boxes_xyxy = boxes_xyxy * scale
+            sampled = torchvision.ops.roi_align(
+                img_feats, boxes_xyxy.float().transpose(0, 1).unbind(0), self.roi_size
+            )
+            proj = self.masks_pool_project(sampled)
+            proj = proj.view(bs, n_masks, self.d_model).transpose(0, 1)
+            if masks_embed is None:
+                masks_embed = proj
+            else:
+                masks_embed = masks_embed + proj
+
+        if self.masks_pos_enc_project is not None:
+            console.success("_encode_masks_2", "Using masks_pos_enc")
+            cx, cy, w, h = boxes.unbind(-1)
+            enc = self.pos_enc.encode_boxes(
+                cx.flatten(), cy.flatten(), w.flatten(), h.flatten()
+            )
+            enc = enc.view(n_masks, bs, enc.shape[-1])
+            proj = self.masks_pos_enc_project(enc)
+            if masks_embed is None:
+                masks_embed = proj
+            else:
+                masks_embed = masks_embed + proj
+
+        # Use label_embed (same as boxes use for +/- labels)
+        type_embed = self.label_embed(mask_labels.long())
+        console.info("_encode_masks_2", f"Output shape: {(type_embed + masks_embed).shape}")
+        return type_embed + masks_embed, masks_mask
+
     def forward(self, geo_prompt: Prompt, img_feats, img_sizes, img_pos_embeds=None):
         console.info("forward", f"Starting forward pass with img_feats len={len(img_feats)}")
         
@@ -866,25 +972,38 @@ class SequenceGeometryEncoder(nn.Module):
         else:
             console.info("forward", "Skipping separate box encoding (boxes already encoded as points)")
 
-        if masks is not None and self.mask_encoder is not None:
-            console.info("forward", "Encoding masks")
-            masks_embed, masks_mask = self._encode_masks(
-                masks=masks,
-                attn_mask=masks_mask,
-                mask_labels=masks_labels,
-                img_feats=img_feats,
-            )
-            console.info("forward", f"masks_embed shape: {masks_embed.shape}")
-            if points.size(0) == boxes.size(0) == 0:
-                console.info("forward", "Returning early with only mask embeddings")
-                return masks_embed, masks_mask
+        if masks is not None:
+            if self.mask_encoder is not None:
+                console.info("forward", "Encoding masks with mask_encoder")
+                masks_embed, masks_mask = self._encode_masks(
+                    masks=masks,
+                    attn_mask=masks_mask,
+                    mask_labels=masks_labels,
+                    img_feats=img_feats,
+                )
+                console.info("forward", f"masks_embed shape: {masks_embed.shape}")
+                if points.size(0) == boxes.size(0) == 0:
+                    console.info("forward", "Returning early with only mask embeddings")
+                    return masks_embed, masks_mask
+                else:
+                    console.info("forward", "Points/boxes present, will concatenate masks later")
             else:
-                console.info("forward", "Points/boxes present, will concatenate masks later")
+                # Use _encode_masks_2: convert mask to box and use box encoding
+                console.info("forward", "Encoding masks as boxes (no mask_encoder)")
+                masks_embed, masks_mask = self._encode_masks_2(
+                    masks=masks,
+                    masks_mask=masks_mask,
+                    mask_labels=masks_labels,
+                    img_feats=img_feats,
+                )
+                console.info("forward", f"masks_embed shape: {masks_embed.shape}")
+                # Concatenate with existing embeddings
+                final_embeds, final_mask = concat_padded_sequences(
+                    final_embeds, final_mask, masks_embed, masks_mask
+                )
+                console.info("forward", f"After concat with masks - final_embeds shape: {final_embeds.shape}")
         else:
-            if masks is None:
-                console.warning("forward", "No masks provided")
-            elif self.mask_encoder is None:
-                console.warning("forward", "mask_encoder not configured, skipping")
+            console.warning("forward", "No masks provided")
 
         bs = final_embeds.shape[1]
         assert final_mask.shape[0] == bs
